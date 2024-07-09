@@ -1,3 +1,5 @@
+# import sys,os
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import copy
 import math
 
@@ -5,13 +7,18 @@ import torch
 from torch import nn
 from torch.nn import AvgPool1d, Conv1d, Conv2d, ConvTranspose1d
 from torch.nn import functional as F
-from torch.nn.utils import remove_weight_norm, spectral_norm, weight_norm
+from torch.nn.utils import remove_weight_norm, spectral_norm
+from torch.nn.utils.parametrizations import weight_norm
 
-import attentions
-import commons
-import modules
-import monotonic_align
-from commons import get_padding, init_weights
+# +
+from src.models.vits2 import attentions
+from src.models.vits2 import commons
+from src.models.vits2 import modules
+from src.models.vits2 import monotonic_align
+from src.models.vits2.commons import get_padding, init_weights
+
+from src.models.bigvgan.generator import Generator as BigVGAN
+# -
 
 AVAILABLE_FLOW_TYPES = [
     "pre_conv",
@@ -328,57 +335,6 @@ class DurationDiscriminatorV2(nn.Module):  # vits2
             output_probs.append([output_prob])
 
         return output_probs
-
-
-class TextEncoder(nn.Module):
-    def __init__(
-        self,
-        n_vocab,
-        out_channels,
-        hidden_channels,
-        filter_channels,
-        n_heads,
-        n_layers,
-        kernel_size,
-        p_dropout,
-        gin_channels=0,
-    ):
-        super().__init__()
-        self.n_vocab = n_vocab
-        self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
-        self.filter_channels = filter_channels
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        self.kernel_size = kernel_size
-        self.p_dropout = p_dropout
-        self.gin_channels = gin_channels
-        self.emb = nn.Embedding(n_vocab, hidden_channels)
-        nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5)
-
-        self.encoder = attentions.Encoder(
-            hidden_channels,
-            filter_channels,
-            n_heads,
-            n_layers,
-            kernel_size,
-            p_dropout,
-            gin_channels=self.gin_channels,
-        )
-        self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
-
-    def forward(self, x, x_lengths, g=None):
-        x = self.emb(x) * math.sqrt(self.hidden_channels)  # [b, t, h]
-        x = torch.transpose(x, 1, -1)  # [b, h, t]
-        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(
-            x.dtype
-        )
-
-        x = self.encoder(x * x_mask, x_mask, g=g)
-        stats = self.proj(x) * x_mask
-
-        m, logs = torch.split(stats, self.out_channels, dim=1)
-        return x, m, logs, x_mask
 
 
 class ContentEncoder(nn.Module):
@@ -1169,46 +1125,28 @@ class SynthesizerTrn(nn.Module):
 
     def __init__(
         self,
-        n_vocab,
-        spec_channels,
-        segment_size,
-        inter_channels,
-        hidden_channels,
-        filter_channels,
-        n_heads,
-        n_layers,
-        kernel_size,
-        p_dropout,
-        resblock,
-        resblock_kernel_sizes,
-        resblock_dilation_sizes,
-        upsample_rates,
-        upsample_initial_channel,
-        upsample_kernel_sizes,
-        n_speakers=0,
-        gin_channels=0,
-        use_sdp=True,
+        hp
         **kwargs,
     ):
         super().__init__()
-        self.n_vocab = n_vocab
-        self.spec_channels = spec_channels
-        self.inter_channels = inter_channels
-        self.hidden_channels = hidden_channels
-        self.filter_channels = filter_channels
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        self.kernel_size = kernel_size
-        self.p_dropout = p_dropout
-        self.resblock = resblock
-        self.resblock_kernel_sizes = resblock_kernel_sizes
-        self.resblock_dilation_sizes = resblock_dilation_sizes
-        self.upsample_rates = upsample_rates
-        self.upsample_initial_channel = upsample_initial_channel
-        self.upsample_kernel_sizes = upsample_kernel_sizes
-        self.segment_size = segment_size
-        self.n_speakers = n_speakers
-        self.gin_channels = gin_channels
+        self.n_vocab = hp.vits2.n_vocab
+        self.spec_channels = hp.vits2.spec_channels
+        self.inter_channels = hp.vits2.inter_channels
+        self.hidden_channels = hp.vits2.hidden_channels
+        self.filter_channels = hp.vits2.filter_channels
+        self.n_heads = hp.vits2.n_heads
+        self.n_layers = hp.vits2.n_layers
+        self.kernel_size = hp.vits2.kernel_size
+        self.p_dropout = hp.vits2.p_dropout
+        self.resblock = hp.vits2.resblock
+        self.resblock_kernel_sizes = hp.vits2.resblock_kernel_sizes
+        self.resblock_dilation_sizes = hp.vits2.resblock_dilation_sizes
+        self.upsample_rates = hp.vits2.upsample_rates
+        self.upsample_initial_channel = hp.vits2.upsample_initial_channel
+        self.upsample_kernel_sizes = hp.vits2.upsample_kernel_sizes
+        self.segment_size = hp.vits2.segment_size
+        self.n_speakers = hp.vits2.n_speakers
+        self.gin_channels = hp.vits2.gin_channels
         self.use_spk_conditioned_encoder = kwargs.get(
             "use_spk_conditioned_encoder", False
         )
@@ -1220,7 +1158,7 @@ class SynthesizerTrn(nn.Module):
             assert (
                 self.transformer_flow_type in AVAILABLE_FLOW_TYPES
             ), f"transformer_flow_type must be one of {AVAILABLE_FLOW_TYPES}"
-        self.use_sdp = use_sdp
+        self.use_sdp = hp.vits2.use_sdp
         # self.use_duration_discriminator = kwargs.get("use_duration_discriminator", False)
         self.use_noise_scaled_mas = kwargs.get("use_noise_scaled_mas", False)
         self.mas_noise_scale_initial = kwargs.get("mas_noise_scale_initial", 0.01)
@@ -1228,63 +1166,55 @@ class SynthesizerTrn(nn.Module):
 
         self.current_mas_noise_scale = self.mas_noise_scale_initial
         if self.use_spk_conditioned_encoder and gin_channels > 0:
-            self.enc_gin_channels = gin_channels
+            self.enc_gin_channels = self.gin_channels
         else:
             self.enc_gin_channels = 0
-        self.enc_p = TextEncoder(
-            n_vocab,
-            inter_channels,
-            hidden_channels,
-            filter_channels,
-            n_heads,
-            n_layers,
-            kernel_size,
-            p_dropout,
+            
+        self.enc_p = ContentEncoder(
+            self.n_vocab,
+            self.inter_channels,
+            self.hidden_channels,
+            self.filter_channels,
+            self.n_heads,
+            self.n_layers,
+            self.kernel_size,
+            self.p_dropout,
             gin_channels=self.enc_gin_channels,
         )
 
-        self.dec = Generator(
-            inter_channels,
-            resblock,
-            resblock_kernel_sizes,
-            resblock_dilation_sizes,
-            upsample_rates,
-            upsample_initial_channel,
-            upsample_kernel_sizes,
-            gin_channels=gin_channels,
+
+        self.dec = BigVGAN(
+            hp
         )
+
         self.enc_q = PosteriorEncoder(
-            spec_channels,
-            inter_channels,
-            hidden_channels,
+            self.spec_channels,
+            self.inter_channels,
+            self.hidden_channels,
             5,
             1,
             16,
-            gin_channels=gin_channels,
+            gin_channels=self.gin_channels,
         )
         # self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
         self.flow = ResidualCouplingTransformersBlock(
-            inter_channels,
-            hidden_channels,
+            self.inter_channels,
+            self.hidden_channels,
             5,
             1,
             4,
-            gin_channels=gin_channels,
+            gin_channels=self.gin_channels,
             use_transformer_flows=self.use_transformer_flows,
             transformer_flow_type=self.transformer_flow_type,
         )
 
-        if use_sdp:
-            self.dp = StochasticDurationPredictor(
-                hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels
-            )
-        else:
-            self.dp = DurationPredictor(
-                hidden_channels, 256, 3, 0.5, gin_channels=gin_channels
-            )
+        self.speaker_classifier = SpeakerClassifier(
+            hp.vits2.hidden_channels,
+            hp.vits2.spk_dim,
+        )
 
-        if n_speakers > 1:
-            self.emb_g = nn.Embedding(n_speakers, gin_channels)
+        if self.n_speakers > 1:
+            self.emb_g = nn.Embedding(self.n_speakers, self.gin_channels)
 
     def forward(self, x, x_lengths, y, y_lengths, sid=None):
         if self.n_speakers > 0:
@@ -1294,56 +1224,8 @@ class SynthesizerTrn(nn.Module):
 
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+        
         z_p = self.flow(z, y_mask, g=g)
-
-        with torch.no_grad():
-            # negative cross-entropy
-            s_p_sq_r = torch.exp(-2 * logs_p)  # [b, d, t]
-            neg_cent1 = torch.sum(
-                -0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True
-            )  # [b, 1, t_s]
-            neg_cent2 = torch.matmul(
-                -0.5 * (z_p**2).transpose(1, 2), s_p_sq_r
-            )  # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-            neg_cent3 = torch.matmul(
-                z_p.transpose(1, 2), (m_p * s_p_sq_r)
-            )  # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-            neg_cent4 = torch.sum(
-                -0.5 * (m_p**2) * s_p_sq_r, [1], keepdim=True
-            )  # [b, 1, t_s]
-            neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
-
-            if self.use_noise_scaled_mas:
-                epsilon = (
-                    torch.std(neg_cent)
-                    * torch.randn_like(neg_cent)
-                    * self.current_mas_noise_scale
-                )
-                neg_cent = neg_cent + epsilon
-
-            attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-            attn = (
-                monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1))
-                .unsqueeze(1)
-                .detach()
-            )
-
-        w = attn.sum(2)
-        if self.use_sdp:
-            l_length = self.dp(x, x_mask, w, g=g)
-            l_length = l_length / torch.sum(x_mask)
-            logw = self.dp(x, x_mask, g=g, reverse=True, noise_scale=1.0)
-            logw_ = torch.log(w + 1e-6) * x_mask
-        else:
-            logw_ = torch.log(w + 1e-6) * x_mask
-            logw = self.dp(x, x_mask, g=g)
-            l_length = torch.sum((logw - logw_) ** 2, [1, 2]) / torch.sum(
-                x_mask
-            )  # for averaging
-
-        # expand prior
-        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-        logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
 
         z_slice, ids_slice = commons.rand_slice_segments(
             z, y_lengths, self.segment_size
