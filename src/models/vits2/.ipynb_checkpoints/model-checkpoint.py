@@ -10,15 +10,13 @@ from torch.nn import functional as F
 from torch.nn.utils import remove_weight_norm, spectral_norm
 from torch.nn.utils.parametrizations import weight_norm
 
-# +
 from src.models.vits2 import attentions
 from src.models.vits2 import commons
 from src.models.vits2 import modules
 from src.models.vits2 import monotonic_align
 from src.models.vits2.commons import get_padding, init_weights
-
+from src.models.vits2.da import SpeakerClassifier
 from src.models.bigvgan.generator import Generator as BigVGAN
-# -
 
 AVAILABLE_FLOW_TYPES = [
     "pre_conv",
@@ -337,6 +335,7 @@ class DurationDiscriminatorV2(nn.Module):  # vits2
         return output_probs
 
 
+# +
 class ContentEncoder(nn.Module):
     def __init__(
         self,
@@ -386,7 +385,60 @@ class ContentEncoder(nn.Module):
 
         m, logs = torch.split(stats, self.out_channels, dim=1)
         return x, m, logs, x_mask
+    
+class ContentEncoderF0(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 hidden_channels,
+                 filter_channels,
+                 n_heads,
+                 n_layers,
+                 kernel_size,
+                 p_dropout,
+                 gin_channels=0):
+        super().__init__()
+        self.out_channels = out_channels
+        self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=5, padding=2)
+#         self.pit = nn.Embedding(256, hidden_channels)
+        self.pit = nn.Linear(1,hidden_channels)
+        self.gin_channels = gin_channels
+        self.enc = attentions.Encoder(
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+            gin_channels=self.gin_channels,
+        )
+        self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
+    def forward(self, x, x_lengths, f0, g=None):
+#         print(x.shape)
+        x = torch.transpose(x, 1, -1)  # [b, h, t]
+        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(
+            x.dtype
+        )
+       
+        
+#         print(x.shape)
+#         print(self.pre(x).shape, x_mask.shape)
+        x = self.pre(x) * x_mask
+#         print(x.shape)
+
+        x = x + self.pit(f0.unsqueeze(-1)).transpose(1, 2)
+#         print(x.shape)
+        
+        x = self.enc(x * x_mask, x_mask, g=g)
+        stats = self.proj(x) * x_mask
+        m, logs = torch.split(stats, self.out_channels, dim=1)
+        z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
+        return z, m, logs, x_mask, x
+
+
+
+# -
 
 class ResidualCouplingTransformersLayer2(nn.Module):  # vits2
     def __init__(
@@ -875,14 +927,7 @@ class PosteriorEncoder(nn.Module):
         gin_channels=0,
     ):
         super().__init__()
-        self.in_channels = in_channels
         self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
-        self.kernel_size = kernel_size
-        self.dilation_rate = dilation_rate
-        self.n_layers = n_layers
-        self.gin_channels = gin_channels
-
         self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
         self.enc = modules.WN(
             hidden_channels,
@@ -903,6 +948,9 @@ class PosteriorEncoder(nn.Module):
         m, logs = torch.split(stats, self.out_channels, dim=1)
         z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
         return z, m, logs, x_mask
+
+    def remove_weight_norm(self):
+        self.enc.remove_weight_norm()
 
 
 class Generator(torch.nn.Module):
@@ -1118,6 +1166,7 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
+# +
 class SynthesizerTrn(nn.Module):
     """
     Synthesizer for Training
@@ -1126,9 +1175,9 @@ class SynthesizerTrn(nn.Module):
     def __init__(
         self,
         hp
-        **kwargs,
     ):
         super().__init__()
+        self.ppg_dim = hp.vits2.ppg_dim
         self.n_vocab = hp.vits2.n_vocab
         self.spec_channels = hp.vits2.spec_channels
         self.inter_channels = hp.vits2.inter_channels
@@ -1147,31 +1196,23 @@ class SynthesizerTrn(nn.Module):
         self.segment_size = hp.vits2.segment_size
         self.n_speakers = hp.vits2.n_speakers
         self.gin_channels = hp.vits2.gin_channels
-        self.use_spk_conditioned_encoder = kwargs.get(
-            "use_spk_conditioned_encoder", False
-        )
-        self.use_transformer_flows = kwargs.get("use_transformer_flows", False)
-        self.transformer_flow_type = kwargs.get(
-            "transformer_flow_type", "mono_layer_post_residual"
-        )
+        self.use_spk_conditioned_encoder = hp.vits2.use_spk_conditioned_encoder
+        self.use_transformer_flows = hp.vits2.use_transformer_flows
+        self.transformer_flow_type = hp.vits2.transformer_flow_type
+        
         if self.use_transformer_flows:
             assert (
                 self.transformer_flow_type in AVAILABLE_FLOW_TYPES
             ), f"transformer_flow_type must be one of {AVAILABLE_FLOW_TYPES}"
-        self.use_sdp = hp.vits2.use_sdp
-        # self.use_duration_discriminator = kwargs.get("use_duration_discriminator", False)
-        self.use_noise_scaled_mas = kwargs.get("use_noise_scaled_mas", False)
-        self.mas_noise_scale_initial = kwargs.get("mas_noise_scale_initial", 0.01)
-        self.noise_scale_delta = kwargs.get("noise_scale_delta", 2e-6)
 
-        self.current_mas_noise_scale = self.mas_noise_scale_initial
-        if self.use_spk_conditioned_encoder and gin_channels > 0:
+        if self.use_spk_conditioned_encoder and self.gin_channels > 0:
             self.enc_gin_channels = self.gin_channels
         else:
             self.enc_gin_channels = 0
+
             
-        self.enc_p = ContentEncoder(
-            self.n_vocab,
+        self.enc_p = ContentEncoderF0(
+            self.ppg_dim,
             self.inter_channels,
             self.hidden_channels,
             self.filter_channels,
@@ -1213,34 +1254,55 @@ class SynthesizerTrn(nn.Module):
             hp.vits2.spk_dim,
         )
 
-        if self.n_speakers > 1:
-            self.emb_g = nn.Embedding(self.n_speakers, self.gin_channels)
+#         if self.n_speakers > 1:
+#             self.emb_g = nn.Embedding(self.n_speakers, self.gin_channels)
 
-    def forward(self, x, x_lengths, y, y_lengths, sid=None):
-        if self.n_speakers > 0:
-            g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
-        else:
-            g = None
+        self.emb_g = nn.Linear(hp.vits2.spk_dim, self.gin_channels)
 
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+    def forward(self, ppg, pit, spk, spec, ppg_len, spec_len): #, x_lengths, y, y_lengths, sid=None):
+#         if self.n_speakers > 0:
+#             g = self.emb_g(spk).unsqueeze(-1)  # [b, h, 1]
+#         else:
+#             g = None
+        g = self.emb_g(F.normalize(spk)).unsqueeze(-1)        
         
-        z_p = self.flow(z, y_mask, g=g)
+        z_p, m_p, logs_p, ppg_mask, x = self.enc_p(ppg, ppg_len, f0=pit, g=g)
+        z_q, m_q, logs_q, spec_mask = self.enc_q(spec, spec_len, g=g)
 
-        z_slice, ids_slice = commons.rand_slice_segments(
-            z, y_lengths, self.segment_size
-        )
-        o = self.dec(z_slice, g=g)
-        return (
-            o,
-            l_length,
-            attn,
-            ids_slice,
-            x_mask,
-            y_mask,
-            (z, z_p, m_p, logs_p, m_q, logs_q),
-            (x, logw, logw_),
-        )
+        
+        z_slice, pit_slice, ids_slice = commons.rand_slice_segments_with_pitch(
+        z_q, pit, spec_len, self.segment_size)
+        audio = self.dec(spk, z_slice, pit_slice)
+        
+        # SNAC to flow
+        z_f, logdet_f = self.flow(z_q, spec_mask, g=spk)
+        z_r, logdet_r = self.flow(z_p, spec_mask, g=spk, reverse=True)
+        # speaker
+        
+        spk_preds = self.speaker_classifier(x)
+  
+        return audio, ids_slice, spec_mask, (z_f, z_r, z_p, m_p, logs_p, z_q, m_q, logs_q, logdet_f, logdet_r), spk_preds
+
+
+#         x, m_p, logs_p, x_mask = self.enc_p(ppg, ppg_len, g=g)
+#         z, m_q, logs_q, y_mask = self.enc_q(spec, spec_len, g=g)
+        
+#         z_p = self.flow(z, y_mask, g=g)
+
+#         z_slice, ids_slice = commons.rand_slice_segments(
+#             z, spec_len, self.segment_size
+#         )
+        
+#         o = self.dec(z_slice, g=g)
+                     
+#         return (
+#             o,
+#             ids_slice,
+#             x_mask,
+#             y_mask,
+#             (z, z_p, m_p, logs_p, m_q, logs_q),
+# #             (x, logw, logw_),
+#         )
 
     def infer(
         self,

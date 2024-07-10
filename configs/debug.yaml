@@ -50,6 +50,10 @@ vits2:
   upsample_kernel_sizes: [16,16,4,4]
   use_sdp: false
   
+  
+  use_spk_conditioned_encoder: True
+  use_transformer_flows: True
+  transformer_flow_type: "pre_conv"
   segment_size: 8000
   
 #############################
