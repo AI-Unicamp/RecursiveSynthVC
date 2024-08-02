@@ -1,2 +1,7 @@
 test/assets/*
 notebooks/recod_debug/*
+files/*
+logs/*
+chkpt/*
+pre_trained_models/*
+data_svc/*

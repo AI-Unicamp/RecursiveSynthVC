@@ -47,6 +47,7 @@ class SpeakerAdapter(nn.Module):
         return y
 
 
+# +
 class Generator(torch.nn.Module):
     # this is our main BigVGAN model. Applies anti-aliased periodic activation for resblocks.
     def __init__(self, hp):
@@ -115,7 +116,8 @@ class Generator(torch.nn.Module):
         # Perturbation
         x = x + torch.randn_like(x)
         # adapter
-        x = self.adapter(x, spk)
+        if(spk is not None):
+            x = self.adapter(x, spk)
         x = self.conv_pre(x)
         x = x * torch.tanh(F.softplus(x))
         # nsf
@@ -123,12 +125,17 @@ class Generator(torch.nn.Module):
         f0 = self.f0_upsamp(f0).transpose(1, 2)
         har_source = self.m_source(f0)
         har_source = har_source.transpose(1, 2)
-
+        
+        
+#         print(x.shape, har_source.shape)
         for i in range(self.num_upsamples):
             # upsampling
             x = self.ups[i](x)
+#             print(x.shape)
             # nsf
             x_source = self.noise_convs[i](har_source)
+#             print(x_source.shape)
+#             print(x.shape, x_source.shape)
             x = x + x_source
             # AMP blocks
             xs = None

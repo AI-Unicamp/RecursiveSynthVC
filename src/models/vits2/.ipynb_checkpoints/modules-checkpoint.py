@@ -190,6 +190,7 @@ class WN(torch.nn.Module):
         n_channels_tensor = torch.IntTensor([self.hidden_channels])
 
         if g is not None:
+#             print(g.shape)
             g = self.cond_layer(g)
 
         for i in range(self.n_layers):
