@@ -1,5 +1,6 @@
 import os
 import random
+import argparse
 
 
 def print_error(info):
@@ -8,8 +9,16 @@ def print_error(info):
 
 if __name__ == "__main__":
     os.makedirs("./files/", exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-r", "--root", help="root", dest="root", required=True)
 
-    rootPath = "./data_svc/waves-24k/"
+    args = parser.parse_args()
+    
+
+    
+    rootPath = args.root + '/waves-24k'
+    print(rootPath)
+    
     all_items = []
     for spks in os.listdir(f"./{rootPath}"):
         if not os.path.isdir(f"./{rootPath}/{spks}"):
@@ -19,11 +28,11 @@ if __name__ == "__main__":
             if file.endswith(".wav"):
                 file = file[:-4]
 
-                path_wave = f"./data_svc/waves-24k/{spks}/{file}.wav"
-                path_spec = f"./data_svc/specs/{spks}/{file}.pt"
-                path_pitch = f"./data_svc/pitch/{spks}/{file}.pit.npy"
+                path_wave = f"{args.root}/waves-24k/{spks}/{file}.wav"
+                path_spec = f"{args.root}/specs/{spks}/{file}.pt"
+                path_pitch = f"{args.root}/pitch/{spks}/{file}.pit.npy"
 #                 path_hubert = f"./data_svc/hubert/{spks}/{file}.vec.npy"
-                path_melspec16 = f"./data_svc/melspec16/{spks}/{file}.m16.npy"
+                path_melspec16 = f"{args.root}/melspec16/{spks}/{file}.m16.npy"
                 has_error = 0
 #                 if not os.path.isfile(path_spk):
 #                     print_error(path_spk)

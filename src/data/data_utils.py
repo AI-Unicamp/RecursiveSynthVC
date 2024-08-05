@@ -1,8 +1,12 @@
+# +
 import os
 import numpy as np
 import random
 import torch
 import torch.utils.data
+
+from src.audio.spec import TacotronSTFT
+# -
 
 from scipy.io.wavfile import read
 
@@ -29,6 +33,16 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
         self.hop_length = hparams.hop_length
         self._filter()
         print(f'----------{len(self.items)}----------')
+        device = torch.device('cpu')
+        self.stft = TacotronSTFT(filter_length=hparams.filter_length,
+                        hop_length=hparams.hop_length,
+                        win_length=hparams.win_length,
+                        n_mel_channels=hparams.mel_channels,
+                        sampling_rate=hparams.sampling_rate,
+                        mel_fmin=hparams.mel_fmin,
+                        mel_fmax=hparams.mel_fmax,
+                        center=False,
+                        device=device)
 
     def _filter(self):
         lengths = []
@@ -135,7 +149,10 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
 #         print(melspec16.shape)
 #         print(pit.shape)
         # print(spk.shape)
-        return spe, wav, melspec16, pit
+    
+        mel_spec = self.stft.mel_spectrogram(wav).squeeze(0)
+        
+        return spe, wav, melspec16, pit, mel_spec
 
 
 # +
@@ -155,6 +172,8 @@ class TextAudioSpeakerCollate:
 
         max_spe_len = max([x[0].size(1) for x in batch])
         max_wav_len = max([x[1].size(1) for x in batch])
+        max_melspe_len = max([x[4].size(1) for x in batch])
+        
         spe_lengths = torch.LongTensor(len(batch))
         wav_lengths = torch.LongTensor(len(batch))
         spe_padded = torch.FloatTensor(
@@ -163,6 +182,9 @@ class TextAudioSpeakerCollate:
         spe_padded.zero_()
         wav_padded.zero_()
 
+        mel_spec_padded = torch.FloatTensor(len(batch), batch[0][4].size(0), max_melspe_len)
+        mel_spec_padded.zero_()   
+        
         max_ppg_len = max([x[2].size(1) for x in batch])
         ppg_lengths = torch.FloatTensor(len(batch))
         melspec16_padded = torch.FloatTensor(
@@ -195,6 +217,10 @@ class TextAudioSpeakerCollate:
 
             pit = row[3]
             pit_padded[i, : pit.size(0)] = pit
+        
+            mel_spec = row[4]
+            # print(mel_perturbed_padded.shape, mel_perturbed.shape)
+            mel_spec_padded[i, :, : mel_spec.size(1)] = mel_spec
 
 #             spk[i] = row[5]
         # print(ppg_padded.shape)
@@ -217,6 +243,7 @@ class TextAudioSpeakerCollate:
             spe_lengths,
             wav_padded,
             wav_lengths,
+            mel_spec_padded
         )
 
 

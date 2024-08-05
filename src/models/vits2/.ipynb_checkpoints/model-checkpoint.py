@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import AvgPool1d, Conv1d, Conv2d, ConvTranspose1d
 from torch.nn import functional as F
 from torch.nn.utils import remove_weight_norm, spectral_norm
-from torch.nn.utils.parametrizations import weight_norm
+from torch.nn.utils import weight_norm
 
 from src.models.vits2 import attentions
 from src.models.vits2 import commons
@@ -17,6 +17,7 @@ from src.models.vits2 import monotonic_align
 from src.models.vits2.commons import get_padding, init_weights
 from src.models.vits2.da import SpeakerClassifier
 from src.models.bigvgan.generator import Generator as BigVGAN
+from src.models.encoder.reference_encoder import ReferenceEncoder
 
 AVAILABLE_FLOW_TYPES = [
     "pre_conv"
@@ -977,19 +978,21 @@ class SynthesizerTrn(nn.Module):
 
 #         if self.n_speakers > 1:
 #             self.emb_g = nn.Embedding(self.n_speakers, self.gin_channels)
+        self.re = ReferenceEncoder(100,hp.vits2.spk_dim)
+        self.emb_g = nn.Linear(hp.vits2.spk_dim, self.gin_channels)
 
-#         self.emb_g = nn.Linear(hp.vits2.spk_dim, self.gin_channels)
-
-    def forward(self, melspec16, pit, spec, ppg_len, spec_len): #, x_lengths, y, y_lengths, sid=None):
+    def forward(self, melspec16, pit, spec, ppg_len, spec_len, melspec): #, x_lengths, y, y_lengths, sid=None):
 #         if self.n_speakers > 0:
 #             g = self.emb_g(spk).unsqueeze(-1)  # [b, h, 1]
 #         else:
 #             g = None
-#         g = self.emb_g(F.normalize(spk)).unsqueeze(-1)   
+        spk = self.re(melspec.permute(0,2,1))
+        g = self.emb_g(spk).unsqueeze(-1)   
+        
         ppg_len = ppg_len//2
     
-        g = None
-        spk = None
+#         g = None
+#         spk = None
         
         melspec16 = melspec16.half()
         with torch.no_grad():
@@ -1011,7 +1014,7 @@ class SynthesizerTrn(nn.Module):
         audio = self.dec(spk, z_slice, pit_slice)
         
         # SNAC to flow
-        z_p = self.flow(z_q, spec_mask, g=spk)
+        z_p = self.flow(z_q, spec_mask, g=g)
 #         z_f, logdet_f = self.flow(z_q, spec_mask, g=spk.unsqueeze(-1))
 #         z_r, logdet_r = self.flow(z_p, spec_mask, g=spk.unsqueeze(-1), reverse=True)
         # speaker
@@ -1021,11 +1024,14 @@ class SynthesizerTrn(nn.Module):
         return audio, ids_slice, spec_mask, (z_p_tmp, z_p, m_p, logs_p, z_q, m_q, logs_q)#, spk_preds
 
 
-    def infer(self, melspec16, pit, ppg_l):
-        
-        g = None
-        
-        spk = None
+    def infer(self, melspec16, pit, ppg_l, melspec):
+#         print(melspec.shape)
+        spk = self.re(melspec.permute(0,2,1))
+#         print(spk.shape)
+        g = self.emb_g(spk).unsqueeze(-1)   
+    
+#         g = None
+#         spk = None
 #         print(ppg_l)
         ppg_l = ppg_l//2
 #         print(ppg_l)# It seem working
@@ -1038,7 +1044,7 @@ class SynthesizerTrn(nn.Module):
         
     
         
-        z = self.flow(z_p, ppg_mask, g=spk, reverse=True)
+        z = self.flow(z_p, ppg_mask, g=g, reverse=True)
         spk = None
         o = self.dec(spk, z * ppg_mask, f0=pit)
         return o

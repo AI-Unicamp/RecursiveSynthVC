@@ -114,6 +114,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
 
     init_epoch = 1
     step = 0
+    best_mel_loss = 999
 
     stft = TacotronSTFT(filter_length=hp.data.filter_length,
                         hop_length=hp.data.hop_length,
@@ -151,8 +152,6 @@ def train(rank, args, chkpt_path, hp, hp_str):
         load_model(model_d, checkpoint['model_d'])
 
     if chkpt_path is not None:
-        if rank == 0:
-            logger.info("Resuming from checkpoint: %s" % chkpt_path)
         checkpoint = torch.load(chkpt_path, map_location='cpu')
         load_model(model_g, checkpoint['model_g'])
         load_model(model_d, checkpoint['model_d'])
@@ -160,7 +159,14 @@ def train(rank, args, chkpt_path, hp, hp_str):
         optim_d.load_state_dict(checkpoint['optim_d'])
         init_epoch = checkpoint['epoch']
         step = checkpoint['step']
-
+        try:
+            best_mel_loss = checkpoint['best_mel_loss']
+        except:
+            best_mel_loss = 999
+            print('It was not possible to recover best_mel_loss, starting it in 999 as default!')
+        if rank == 0:
+            logger.info(f"Resuming training from epoch {init_epoch} and checkpoint: {chkpt_path}")
+            
         if rank == 0:
             if hp_str != checkpoint['hp_str']:
                 logger.warning("New hparams is different from checkpoint. Will use new.")
@@ -190,8 +196,22 @@ def train(rank, args, chkpt_path, hp, hp_str):
 
         if rank == 0 and epoch % hp.log.eval_interval == 0:
             with torch.no_grad():
-                validate(hp, args, model_g, model_d, valloader, stft, writer, step, device)
-
+                current_val_mel_loss = validate(hp, args, model_g, model_d, valloader, stft, writer, step, device)
+                save_path = os.path.join(pth_dir, f'{args.name}_best_model.pth')
+                if(current_val_mel_loss < best_mel_loss):
+                    best_mel_loss = current_val_mel_loss
+                    torch.save({
+                        'model_g': (model_g.module if args.num_gpus > 1 else model_g).state_dict(),
+                        'model_d': (model_d.module if args.num_gpus > 1 else model_d).state_dict(),
+                        'optim_g': optim_g.state_dict(),
+                        'optim_d': optim_d.state_dict(),
+                        'step': step,
+                        'epoch': epoch,
+                        'hp_str': hp_str,
+                        'best_mel_loss': best_mel_loss
+                    }, save_path)
+                    logger.info("Saved best_model checkpoint to: %s" % save_path)
+                    
         if rank == 0:
             loader = tqdm.tqdm(trainloader, desc='Loading train data')
         else:
@@ -200,7 +220,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
         model_g.train()
         model_d.train()
 
-        for melspec16, ppg_l, pit, spec, spec_l, audio, audio_l in loader:
+        for melspec16, ppg_l, pit, spec, spec_l, audio, audio_l, melspec in loader:
 
             melspec16 = melspec16.to(device)
             pit = pit.to(device)
@@ -209,11 +229,12 @@ def train(rank, args, chkpt_path, hp, hp_str):
             ppg_l = ppg_l.to(device)
             spec_l = spec_l.to(device)
             audio_l = audio_l.to(device)
-
+            melspec = melspec.to(device)
+            
             # generator
             fake_audio, ids_slice, z_mask, \
                 (z_f, z_p, m_p, logs_p, z_q, m_q, logs_q) = model_g(
-                    melspec16, pit, spec, ppg_l, spec_l)
+                    melspec16, pit, spec, ppg_l, spec_l, melspec)
 #             print(audio.shape)
             audio = commons.slice_segments(
                 audio, ids_slice * hp.data.hop_length, hp.data.segment_size)  # slice
@@ -316,6 +337,8 @@ def train(rank, args, chkpt_path, hp, hp_str):
                 'step': step,
                 'epoch': epoch,
                 'hp_str': hp_str,
+                'best_mel_loss': best_mel_loss
+                
             }, save_path)
             logger.info("Saved checkpoint to: %s" % save_path)
 
@@ -335,7 +358,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
                 time_key = (lambda _f: os.path.getmtime(os.path.join(path_to_models, _f)))
                 sort_key = time_key if sort_by_time else name_key
                 x_sorted = lambda _x: sorted(
-                    [f for f in ckpts_files if f.startswith(_x) and not f.endswith('sovits5.0_0.pth')], key=sort_key)
+                    [f for f in ckpts_files if f.startswith(_x) and not f.endswith('best_model.pth')], key=sort_key)
                 if n_ckpts_to_keep == 0:
                     to_del = []
                 else:
