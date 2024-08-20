@@ -49,7 +49,7 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
         items_new = []
         items_min = int(self.segment_size / self.hop_length * 4)  # 1 S
         items_max = int(self.segment_size / self.hop_length * 16)  # 4 S
-        for wavpath, spec, pitch, melspec16 in self.items:
+        for wavpath, spec, pitch, melspec16, spk in self.items:
             if not os.path.isfile(wavpath):
                 continue
             if not os.path.isfile(spec):
@@ -68,7 +68,7 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
                 continue
             if (usel >= items_max):
                 usel = items_max
-            items_new.append([wavpath, spec, pitch, melspec16, usel])
+            items_new.append([wavpath, spec, pitch, melspec16, int(spk), usel])
             lengths.append(usel)
         self.items = items_new
         self.lengths = lengths
@@ -94,8 +94,8 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
         pit = item[2]
 #         vec = item[3]
         melspec16 = item[3]
-#         spk = item[5]
-        use = item[4]
+        spk = item[4]
+        use = item[5]
 
     
         wav = self.read_wav(wav)
@@ -112,20 +112,20 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
         pit = torch.FloatTensor(pit)
 #         vec = torch.FloatTensor(vec)
         melspec16 = torch.FloatTensor(melspec16)
-#         spk = torch.FloatTensor(spk)
+        spk = torch.LongTensor([spk])
     
         
     
         len_pit = pit.size()[0]
 #         len_vec = vec.size()[0] - 2 # for safe
-        len_ppg = melspec16.size()[1]  # for safe
+        len_ppg = melspec16.size()[0]  # for safe
 #         len_min = min(len_pit, len_ppg)
 #         len_min = min(len_min, len_ppg)
         len_wav = len_pit * self.hop_length
-
+        # print(melspec16.shape)
         pit = pit[:len_pit]
 #         vec = vec[:len_min, :]
-        melspec16 = melspec16[:, :len_ppg]
+        melspec16 = melspec16[:len_ppg, :]
         spe = spe[:, :len_pit]
         wav = wav[:, :len_wav]
         
@@ -152,7 +152,7 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
     
         mel_spec = self.stft.mel_spectrogram(wav).squeeze(0)
         
-        return spe, wav, melspec16, pit, mel_spec
+        return spe, wav, melspec16, pit, mel_spec, spk
 
 
 # +
@@ -185,17 +185,22 @@ class TextAudioSpeakerCollate:
         mel_spec_padded = torch.FloatTensor(len(batch), batch[0][4].size(0), max_melspe_len)
         mel_spec_padded.zero_()   
         
-        max_ppg_len = max([x[2].size(1) for x in batch])
+        # max_ppg_len = max([x[2].size(1) for x in batch])
+        # ppg_lengths = torch.FloatTensor(len(batch))
+        # melspec16_padded = torch.FloatTensor(
+        #     len(batch),  batch[0][2].size(0), max_ppg_len)
+
+        max_ppg_len = max([x[2].size(0) for x in batch])
         ppg_lengths = torch.FloatTensor(len(batch))
         melspec16_padded = torch.FloatTensor(
-            len(batch),  batch[0][2].size(0), max_ppg_len)
-#         vec_padded = torch.FloatTensor(
-#             len(batch), max_ppg_len, batch[0][3].size(1))
+            len(batch), max_ppg_len, batch[0][2].size(1))
+
+        
         pit_padded = torch.FloatTensor(len(batch), max_spe_len)
         melspec16_padded.zero_()
 #         vec_padded.zero_()
         pit_padded.zero_()
-#         spk = torch.FloatTensor(len(batch), batch[0][5].size(0))
+        spkids = torch.LongTensor(len(batch), 1)
 
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
@@ -209,11 +214,8 @@ class TextAudioSpeakerCollate:
             wav_lengths[i] = wav.size(1)
 
             melspec16 = row[2]
-            melspec16_padded[i, : ,: melspec16.size(1)] = melspec16
-            ppg_lengths[i] = melspec16.size(1)
-
-#             vec = row[3]
-#             vec_padded[i, : vec.size(0), :] = vec
+            melspec16_padded[i, :melspec16.size(0) ,:] = melspec16
+            ppg_lengths[i] = melspec16.size(0)
 
             pit = row[3]
             pit_padded[i, : pit.size(0)] = pit
@@ -221,8 +223,9 @@ class TextAudioSpeakerCollate:
             mel_spec = row[4]
             # print(mel_perturbed_padded.shape, mel_perturbed.shape)
             mel_spec_padded[i, :, : mel_spec.size(1)] = mel_spec
-
-#             spk[i] = row[5]
+            # print(spkids.shape, row[5].shape)
+            spkids[i, 0] = row[5]
+            
         # print(ppg_padded.shape)
         # print(ppg_lengths.shape)
         # print(pit_padded.shape)
@@ -243,7 +246,8 @@ class TextAudioSpeakerCollate:
             spe_lengths,
             wav_padded,
             wav_lengths,
-            mel_spec_padded
+            mel_spec_padded,
+            spkids
         )
 
 
