@@ -32,9 +32,10 @@ if __name__ == '__main__':
     if torch.cuda.is_available():
         torch.cuda.manual_seed(hp.train.seed)
         args.num_gpus = torch.cuda.device_count()
-        print('Batch size per GPU :', hp.train.batch_size)
+        print(f'Training with {args.num_gpus} GPUS. Batch size per GPU : {hp.train.batch_size}')
 
         if args.num_gpus > 1:
+            print("Starting multi-gpu training")
             mp.spawn(train, nprocs=args.num_gpus,
                      args=(args, args.checkpoint_path, hp, hp_str,))
         else:
