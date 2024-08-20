@@ -5,8 +5,8 @@ import argparse
 import torch
 import random
 from tqdm import tqdm
-from whisper.model import Whisper, ModelDimensions
-from whisper.audio import load_audio, pad_or_trim, log_mel_spectrogram
+from src.models.whisper.model import Whisper, ModelDimensions
+from src.models.whisper.audio import load_audio, pad_or_trim, log_mel_spectrogram
 
 
 def load_model(path) -> Whisper:
@@ -26,16 +26,28 @@ def load_model(path) -> Whisper:
     return model
 
 
-def pred_ppg(whisper: Whisper, wavPath, ppgPath):
+def load_model_whisper(path, device) -> Whisper:
+    checkpoint = torch.load(path, map_location="cpu")
+    dims = ModelDimensions(**checkpoint["dims"])
+    model = Whisper(dims)
+    del model.decoder
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    model.eval()
+    if not (device == "cpu"):
+        model.half()
+    model.to(device)
+    return model
+
+def pred_whisper(whisper: Whisper, wavPath, ppgPath):
     audio = load_audio(wavPath)
     audln = audio.shape[0]
-    ppgln = audln // 320
+    ppgln = audln // 320 
     audio = pad_or_trim(audio)
     mel = log_mel_spectrogram(audio).half().to(whisper.device)
     with torch.no_grad():
         ppg = whisper.encoder(mel.unsqueeze(0)).squeeze().data.cpu().float().numpy()
-        ppg = ppg[:ppgln,]  # [length, dim=1280]
-        # print(ppg.shape)
+        ppg = ppg[:ppgln,]  # [length, dim=512]
+        # print(ppg.shape, ppgln)
         np.save(ppgPath, ppg, allow_pickle=False)
 
 
@@ -50,8 +62,8 @@ if __name__ == "__main__":
     os.makedirs(args.ppg, exist_ok=True)
     wavPath = args.wav
     ppgPath = args.ppg
-
-    whisper = load_model(os.path.join("whisper_pretrain", "large-v2.pt"))
+    device = torch.device('cuda:{:d}'.format(rank))
+    whisper = load_model(os.path.join("whisper_pretrain", "base.pt"), device)
     spkPaths = os.listdir(wavPath)
     random.shuffle(spkPaths)
 

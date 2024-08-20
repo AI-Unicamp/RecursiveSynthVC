@@ -6,3 +6,5 @@ chkpt/*
 pre_trained_models/*
 data_svc/*
 data_svc_10spk/*
+data_vc*
+data_vctkesd*

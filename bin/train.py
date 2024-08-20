@@ -28,26 +28,17 @@ from src.models.whisper.model import Whisper, ModelDimensions
 from src.models.whisper.audio import load_audio, pad_or_trim, log_mel_spectrogram
 
 
-# -
 
 def load_model_whisper(path, device) -> Whisper:
     checkpoint = torch.load(path, map_location="cpu")
     dims = ModelDimensions(**checkpoint["dims"])
-    # print(dims)
     model = Whisper(dims)
     del model.decoder
-#     cut = len(model.encoder.blocks) // 4
-#     cut = -1 * cut
-#     del model.encoder.blocks[cut:]
     model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     model.eval()
     if not (device == "cpu"):
         model.half()
     model.to(device)
-    # torch.save({
-    #     'dims': checkpoint["dims"],
-    #     'model_state_dict': model.state_dict(),
-    # }, "large-v2.pt")
     return model
 
 
@@ -100,7 +91,12 @@ def train(rank, args, chkpt_path, hp, hp_str):
 
 #     device = "cuda" if torch.cuda.is_available() else "cpu"
     # whisper = load_model(os.path.join("../../pre_trained_models", "large-v2.pt"), device)
-    whisper = load_model_whisper(os.path.join("./pre_trained_models", "base.pt"), device)
+    if(hp.train.train_with_whisper):
+        whisper = load_model_whisper(os.path.join("./pre_trained_models", "base.pt"), device)
+    else:
+        whisper = None
+        if(whisper is None):
+            print('Training with pre computed whisper features!')
     
     model_g = SynthesizerTrn(
         hp,
@@ -220,7 +216,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
         model_g.train()
         model_d.train()
 
-        for melspec16, ppg_l, pit, spec, spec_l, audio, audio_l, melspec in loader:
+        for melspec16, ppg_l, pit, spec, spec_l, audio, audio_l, melspec, spkids in loader:
 
             melspec16 = melspec16.to(device)
             pit = pit.to(device)
@@ -230,11 +226,12 @@ def train(rank, args, chkpt_path, hp, hp_str):
             spec_l = spec_l.to(device)
             audio_l = audio_l.to(device)
             melspec = melspec.to(device)
+            spkids = spkids.to(device)
             
             # generator
             fake_audio, ids_slice, z_mask, \
                 (z_f, z_p, m_p, logs_p, z_q, m_q, logs_q) = model_g(
-                    melspec16, pit, spec, ppg_l, spec_l, melspec)
+                    melspec16, pit, spec, ppg_l, spec_l, melspec, spkids)
 #             print(audio.shape)
             audio = commons.slice_segments(
                 audio, ids_slice * hp.data.hop_length, hp.data.segment_size)  # slice
@@ -279,7 +276,12 @@ def train(rank, args, chkpt_path, hp, hp_str):
             loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hp.train.c_kl
     
             # Loss
-            loss_g = score_loss + feat_loss + mel_loss + stft_loss + loss_kl
+            if(step > hp.train.freeze_d_steps):
+                loss_g = score_loss + feat_loss + mel_loss + stft_loss + loss_kl
+            else:
+                # print("")
+                loss_g = mel_loss + stft_loss + loss_kl
+                
             loss_g.backward()
 #             print(loss_g)
             if ((step + 1) % hp.train.accum_step == 0) or (step + 1 == len(loader)):
@@ -297,24 +299,26 @@ def train(rank, args, chkpt_path, hp, hp_str):
                 optim_g.zero_grad()
 
             # discriminator
-            optim_d.zero_grad()
-            disc_fake = model_d(fake_audio.detach())
-            disc_real = model_d(audio)
-
             loss_d = 0.0
-            for (_, score_fake), (_, score_real) in zip(disc_fake, disc_real):
-                loss_d += torch.mean(torch.pow(score_real - 1.0, 2))
-                loss_d += torch.mean(torch.pow(score_fake, 2))
-            loss_d = loss_d / len(disc_fake)
+            if(step > hp.train.freeze_d_steps):
+                optim_d.zero_grad()
+                disc_fake = model_d(fake_audio.detach())
+                disc_real = model_d(audio)
+    
+                for (_, score_fake), (_, score_real) in zip(disc_fake, disc_real):
+                    loss_d += torch.mean(torch.pow(score_real - 1.0, 2))
+                    loss_d += torch.mean(torch.pow(score_fake, 2))
+                loss_d = loss_d / len(disc_fake)
 
-            loss_d.backward()
-            clip_grad_value_(model_d.parameters(),  None)
-            optim_d.step()
-
+                loss_d.backward()
+                clip_grad_value_(model_d.parameters(),  None)
+                optim_d.step()
+                loss_d = loss_d.item()
+                
             step += 1
             # logging
             loss_g = loss_g.item()
-            loss_d = loss_d.item()
+            # loss_d = loss_d.item()
             loss_s = stft_loss.item()
             loss_m = mel_loss.item()
             loss_k = loss_kl.item()
@@ -375,4 +379,5 @@ def train(rank, args, chkpt_path, hp, hp_str):
                 clean_checkpoints(path_to_models=f'{pth_dir}', n_ckpts_to_keep=hp.log.keep_ckpts, sort_by_time=True)
 
         scheduler_g.step()
-        scheduler_d.step()
+        if(step > hp.train.freeze_d_steps):
+            scheduler_d.step()

@@ -420,7 +420,7 @@ class ContentEncoderF0(nn.Module):
        
         
 #         print(x.shape)
-#         print(self.pre(x).shape, x_mask.shape)
+        # print(self.pre(x).shape, x_mask.shape)
         x = self.pre(x) * x_mask
 #         print(x.shape)
 
@@ -921,6 +921,7 @@ class SynthesizerTrn(nn.Module):
         self.transformer_flow_type = hp.vits2.transformer_flow_type
         
         self.whisper = whisper
+
         
         if self.use_transformer_flows:
             assert (
@@ -976,27 +977,30 @@ class SynthesizerTrn(nn.Module):
             hp.vits2.spk_dim,
         )
 
-#         if self.n_speakers > 1:
-#             self.emb_g = nn.Embedding(self.n_speakers, self.gin_channels)
-        self.re = ReferenceEncoder(100,hp.vits2.spk_dim)
-        self.emb_g = nn.Linear(hp.vits2.spk_dim, self.gin_channels)
+        if self.n_speakers > 0:
+            self.emb_g = nn.Embedding(self.n_speakers, self.gin_channels)
+        # self.re = ReferenceEncoder(100,hp.vits2.spk_dim)
+        # self.emb_g = nn.Linear(hp.vits2.spk_dim, self.gin_channels)
 
-    def forward(self, melspec16, pit, spec, ppg_len, spec_len, melspec): #, x_lengths, y, y_lengths, sid=None):
-#         if self.n_speakers > 0:
-#             g = self.emb_g(spk).unsqueeze(-1)  # [b, h, 1]
-#         else:
-#             g = None
-        spk = self.re(melspec.permute(0,2,1))
-        g = self.emb_g(spk).unsqueeze(-1)   
+    def forward(self, melspec16, pit, spec, ppg_len, spec_len, melspec, spkids): #, x_lengths, y, y_lengths, sid=None):
+        if self.n_speakers > 0:
+            g = self.emb_g(spkids).permute(0,2,1)  # [b, h, 1]
+            spk = g.squeeze(-1)
+        else:
+            spk = None
+            g = None
+
         
-        ppg_len = ppg_len//2
-    
-#         g = None
-#         spk = None
-        
-        melspec16 = melspec16.half()
-        with torch.no_grad():
-            ppg = self.whisper.encoder(melspec16).float()
+        # spk = self.re(melspec.permute(0,2,1))
+        # g = self.emb_g(spk).unsqueeze(-1)   
+
+        if(self.whisper is None):
+            ppg = melspec16
+        else:
+            ppg_len = ppg_len//2
+            melspec16 = melspec16.half()
+            with torch.no_grad():
+                ppg = self.whisper.encoder(melspec16).float()
             
 #         print(ppg.shape, ppg_len.shape, pit.shape, spec.shape)
         
@@ -1024,28 +1028,32 @@ class SynthesizerTrn(nn.Module):
         return audio, ids_slice, spec_mask, (z_p_tmp, z_p, m_p, logs_p, z_q, m_q, logs_q)#, spk_preds
 
 
-    def infer(self, melspec16, pit, ppg_l, melspec):
-#         print(melspec.shape)
-        spk = self.re(melspec.permute(0,2,1))
-#         print(spk.shape)
-        g = self.emb_g(spk).unsqueeze(-1)   
+    def infer(self, melspec16, pit, ppg_l, melspec, spkids):
+        if self.n_speakers > 0:
+            g = self.emb_g(spkids).permute(0,2,1)  # [b, h, 1]
+            spk = g.squeeze(-1)
+            # print(g.shape)
+        else:
+            spk = None
+            g = None
     
-#         g = None
-#         spk = None
-#         print(ppg_l)
-        ppg_l = ppg_l//2
-#         print(ppg_l)# It seem working
-        melspec16 = melspec16.half()
-        with torch.no_grad():
-            ppg = self.whisper.encoder(melspec16).float()
-#         print(ppg.shape, ppg_l.shape, pit.shape)
+        if(self.whisper is None):
+            ppg = melspec16
+        else:
+            ppg_l = ppg_l//2
+            melspec16 = melspec16.half()
+            with torch.no_grad():
+                ppg = self.whisper.encoder(melspec16).float()
+
+
+        # print(ppg.shape, ppg_l.shape)
+        # print(ppg.shape, pit.shape)
         z_p, m_p, logs_p, ppg_mask, x = self.enc_p(
             ppg, ppg_l, f0=pit)
         
-    
         
         z = self.flow(z_p, ppg_mask, g=g, reverse=True)
-        spk = None
+        # spk = None
         o = self.dec(spk, z * ppg_mask, f0=pit)
         return o
 
@@ -1065,6 +1073,7 @@ class SynthesizerTrn(nn.Module):
     
     def train(self, mode=True):
         super().train(mode)
-        if mode:
-            self.whisper.eval()
+        if self.whisper is not None:
+            if mode:
+                self.whisper.eval()
         return self

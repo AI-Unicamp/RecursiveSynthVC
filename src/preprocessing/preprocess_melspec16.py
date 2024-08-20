@@ -15,10 +15,7 @@ def pred_melspec16(wavPath, ppgPath):
     ppgln = 2*(audln // 320) #in order to match spectrogram shape it must truncate at number frames of 320 hop, so 2*frames(hop160)
     audio = pad_or_trim(audio)
     mel = log_mel_spectrogram(audio).data.cpu().float().numpy()
-#     with torch.no_grad():
-#         ppg = whisper.encoder(mel.unsqueeze(0)).squeeze().data.cpu().float().numpy()
-#         ppg = ppg[:ppgln,]  # [length, dim=1280]
-#         # print(ppg.shape)
+
     np.save(ppgPath, mel[:,:ppgln], allow_pickle=False)
 
 
