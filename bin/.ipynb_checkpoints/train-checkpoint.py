@@ -19,9 +19,9 @@ from src.utils.stft import TacotronSTFT
 from src.utils.stft_loss import MultiResolutionSTFTLoss
 from src.utils.validation import validate
 from src.models.bigvgan.discriminator import Discriminator
-from src.models.vits2.model import SynthesizerTrn
+from src.models.vits2.model import SynthesizerTrn, MultiPeriodDiscriminator
 from src.models.vits2 import commons
-from src.models.vits2.losses import kl_loss
+from src.models.vits2.losses import generator_loss, discriminator_loss, feature_loss, kl_loss
 from src.models.vits2.commons import clip_grad_value_
 
 from src.models.whisper.model import Whisper, ModelDimensions
@@ -101,7 +101,8 @@ def train(rank, args, chkpt_path, hp, hp_str):
     model_g = SynthesizerTrn(
         hp,
         whisper).to(device)
-    model_d = Discriminator(hp).to(device)
+    # model_d = Discriminator(hp).to(device)
+    model_d = MultiPeriodDiscriminator(hp.mpd.use_spectral_norm).to(device)
 
     optim_g = torch.optim.AdamW(model_g.parameters(),
                                 lr=hp.train.learning_rate, betas=hp.train.betas, eps=hp.train.eps)
@@ -142,7 +143,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
 
     if os.path.isfile(hp.train.pretrain):
         if rank == 0:
-            logger.info("Start from 32k pretrain model: %s" % hp.train.pretrain)
+            logger.info("Start from pretrained model: %s" % hp.train.pretrain)
         checkpoint = torch.load(hp.train.pretrain, map_location='cpu')
         load_model(model_g, checkpoint['model_g'])
         load_model(model_d, checkpoint['model_d'])
@@ -171,8 +172,8 @@ def train(rank, args, chkpt_path, hp, hp_str):
             logger.info("Starting new training run.")
 
     if args.num_gpus > 1:
-        model_g = DistributedDataParallel(model_g, device_ids=[rank])
-        model_d = DistributedDataParallel(model_d, device_ids=[rank])
+        model_g = DistributedDataParallel(model_g, device_ids=[rank], find_unused_parameters=True)
+        model_d = DistributedDataParallel(model_d, device_ids=[rank], find_unused_parameters=True)
 
     # this accelerates training when the size of minibatch is always consistent.
     # if not consistent, it'll horribly slow down.
@@ -181,8 +182,8 @@ def train(rank, args, chkpt_path, hp, hp_str):
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hp.train.lr_decay, last_epoch=init_epoch-2)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=hp.train.lr_decay, last_epoch=init_epoch-2)
 
-    stft_criterion = MultiResolutionSTFTLoss(device, eval(hp.mrd.resolutions))
-    spkc_criterion = nn.CosineEmbeddingLoss()
+    # stft_criterion = MultiResolutionSTFTLoss(device, eval(hp.mrd.resolutions))
+    # spkc_criterion = nn.CosineEmbeddingLoss()
 
     trainloader = create_dataloader_train(hp, args.num_gpus, rank)
 
@@ -230,8 +231,13 @@ def train(rank, args, chkpt_path, hp, hp_str):
             
             # generator
             fake_audio, ids_slice, z_mask, \
-                (z_f, z_p, m_p, logs_p, z_q, m_q, logs_q) = model_g(
+                (z_p, m_p, logs_p, logs_q) = model_g(
                     melspec16, pit, spec, ppg_l, spec_l, melspec, spkids)
+            
+            ## OLD
+            # fake_audio, ids_slice, z_mask, \
+            #     (z_f, z_p, m_p, logs_p, z_q, m_q, logs_q) = model_g(
+            #         melspec16, pit, spec, ppg_l, spec_l, melspec, spkids)
 #             print(audio.shape)
             audio = commons.slice_segments(
                 audio, ids_slice * hp.data.hop_length, hp.data.segment_size)  # slice
@@ -250,24 +256,29 @@ def train(rank, args, chkpt_path, hp, hp_str):
             mel_loss = F.l1_loss(mel_fake, mel_real) * hp.train.c_mel
 #             print(mel_loss)
             # Multi-Resolution STFT Loss
-            sc_loss, mag_loss = stft_criterion(fake_audio.squeeze(1), audio.squeeze(1))
-            stft_loss = (sc_loss + mag_loss) * hp.train.c_stft
+            # sc_loss, mag_loss = stft_criterion(fake_audio.squeeze(1), audio.squeeze(1))
+            # stft_loss = (sc_loss + mag_loss) * hp.train.c_stft
 
             # Generator Loss
-            disc_fake = model_d(fake_audio)
-            score_loss = 0.0
-            for (_, score_fake) in disc_fake:
-                score_loss += torch.mean(torch.pow(score_fake - 1.0, 2))
-            score_loss = score_loss / len(disc_fake)
+            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(audio, fake_audio)
+            
+            feat_loss = feature_loss(fmap_r, fmap_g)
+            gen_loss, losses_gen = generator_loss(y_d_hat_g)
+            
+            # disc_fake = model_d(fake_audio)
+            # score_loss = 0.0
+            # for (_, score_fake) in disc_fake:
+            #     score_loss += torch.mean(torch.pow(score_fake - 1.0, 2))
+            # score_loss = score_loss / len(disc_fake)
 
-            # Feature Loss
-            disc_real = model_d(audio)
-            feat_loss = 0.0
-            for (feat_fake, _), (feat_real, _) in zip(disc_fake, disc_real):
-                for fake, real in zip(feat_fake, feat_real):
-                    feat_loss += torch.mean(torch.abs(fake - real))
-            feat_loss = feat_loss / len(disc_fake)
-            feat_loss = feat_loss * 2
+            # # Feature Loss
+            # disc_real = model_d(audio)
+            # feat_loss = 0.0
+            # for (feat_fake, _), (feat_real, _) in zip(disc_fake, disc_real):
+            #     for fake, real in zip(feat_fake, feat_real):
+            #         feat_loss += torch.mean(torch.abs(fake - real))
+            # feat_loss = feat_loss / len(disc_fake)
+            # feat_loss = feat_loss * 2
 
             # Kl Loss
 #             loss_kl_f = kl_loss(z_f, logs_q, m_p, logs_p, logdet_f, z_mask) * hp.train.c_kl
@@ -277,10 +288,10 @@ def train(rank, args, chkpt_path, hp, hp_str):
     
             # Loss
             if(step > hp.train.freeze_d_steps):
-                loss_g = score_loss + feat_loss + mel_loss + stft_loss + loss_kl
+                loss_g = gen_loss + feat_loss + mel_loss + loss_kl #+ stft_loss
             else:
                 # print("")
-                loss_g = mel_loss + stft_loss + loss_kl
+                loss_g = mel_loss + loss_kl #+ stft_loss 
                 
             loss_g.backward()
 #             print(loss_g)
@@ -302,13 +313,17 @@ def train(rank, args, chkpt_path, hp, hp_str):
             loss_d = 0.0
             if(step > hp.train.freeze_d_steps):
                 optim_d.zero_grad()
-                disc_fake = model_d(fake_audio.detach())
-                disc_real = model_d(audio)
+
+                y_d_hat_r, y_d_hat_g, _, _ = net_d(audio, fake_audio.detach())
+                loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g)
+                loss_d = loss_disc
+                # disc_fake = model_d(fake_audio.detach())
+                # disc_real = model_d(audio)
     
-                for (_, score_fake), (_, score_real) in zip(disc_fake, disc_real):
-                    loss_d += torch.mean(torch.pow(score_real - 1.0, 2))
-                    loss_d += torch.mean(torch.pow(score_fake, 2))
-                loss_d = loss_d / len(disc_fake)
+                # for (_, score_fake), (_, score_real) in zip(disc_fake, disc_real):
+                #     loss_d += torch.mean(torch.pow(score_real - 1.0, 2))
+                #     loss_d += torch.mean(torch.pow(score_fake, 2))
+                # loss_d = loss_d / len(disc_fake)
 
                 loss_d.backward()
                 clip_grad_value_(model_d.parameters(),  None)
@@ -319,16 +334,16 @@ def train(rank, args, chkpt_path, hp, hp_str):
             # logging
             loss_g = loss_g.item()
             # loss_d = loss_d.item()
-            loss_s = stft_loss.item()
+            loss_f = feat_loss.item()
             loss_m = mel_loss.item()
             loss_k = loss_kl.item()
 #             loss_r = loss_kl_r.item()
 #             loss_i = spk_loss.item()
 
             if rank == 0 and step % hp.log.info_interval == 0:
-                writer.log_training(loss_g, loss_d, loss_m, loss_s, loss_k, score_loss.item(), step)
+                writer.log_training(loss_g, loss_d, loss_m, loss_f, loss_k, gen_loss.item(), step)
                 logger.info("epoch %d | g %.04f m %.04f s %.04f d %.04f k %.04f | step %d" % (
-                    epoch, loss_g, loss_m, loss_s, loss_d, loss_k, step))
+                    epoch, loss_g, loss_m, loss_f, loss_d, loss_k, step))
 
         if rank == 0 and epoch % hp.log.save_interval == 0:
             save_path = os.path.join(pth_dir, '%s_%04d.pt'

@@ -721,7 +721,9 @@ class Generator(torch.nn.Module):
             self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
 
     def forward(self, x, g=None):
+        # print(x.shape, g.shape)
         x = self.conv_pre(x)
+        # print(x.shape)
         if g is not None:
             x = x + self.cond(g)
 
@@ -919,7 +921,7 @@ class SynthesizerTrn(nn.Module):
         self.use_spk_conditioned_encoder = hp.vits2.use_spk_conditioned_encoder
         self.use_transformer_flows = hp.vits2.use_transformer_flows
         self.transformer_flow_type = hp.vits2.transformer_flow_type
-        
+        self.initial_channel = hp.vits2.initial_channel
         self.whisper = whisper
 
         
@@ -947,8 +949,19 @@ class SynthesizerTrn(nn.Module):
         )
 
 
-        self.dec = BigVGAN(
-            hp
+        # self.dec = BigVGAN(
+        #     hp
+        # )
+
+        self.dec = Generator(
+            initial_channel = self.initial_channel,
+            resblock = self.resblock,
+            resblock_kernel_sizes = self.resblock_kernel_sizes,
+            resblock_dilation_sizes = self.resblock_dilation_sizes,
+            upsample_rates = self.upsample_rates,
+            upsample_initial_channel = self.upsample_initial_channel,
+            upsample_kernel_sizes = self.upsample_kernel_sizes,
+            gin_channels = self.gin_channels
         )
 
         self.enc_q = PosteriorEncoder(
@@ -997,6 +1010,7 @@ class SynthesizerTrn(nn.Module):
         if(self.whisper is None):
             ppg = melspec16
         else:
+            None
             ppg_len = ppg_len//2
             melspec16 = melspec16.half()
             with torch.no_grad():
@@ -1015,7 +1029,8 @@ class SynthesizerTrn(nn.Module):
 #         print('seg size in model: ', self.segment_size)
 #         print(z_slice.shape, pit_slice.shape)
     
-        audio = self.dec(spk, z_slice, pit_slice)
+        # audio = self.dec(spk, z_slice, pit_slice)
+        audio = self.dec(z_slice, g)
         
         # SNAC to flow
         z_p = self.flow(z_q, spec_mask, g=g)
@@ -1025,7 +1040,8 @@ class SynthesizerTrn(nn.Module):
         
 #         spk_preds = self.speaker_classifier(x)
   
-        return audio, ids_slice, spec_mask, (z_p_tmp, z_p, m_p, logs_p, z_q, m_q, logs_q)#, spk_preds
+        # return audio, ids_slice, spec_mask, (z_p_tmp, z_p, m_p, logs_p, z_q, m_q, logs_q)#, spk_preds
+        return audio, ids_slice, spec_mask, (z_p, m_p, logs_p, logs_q)#, spk_preds
 
 
     def infer(self, melspec16, pit, ppg_l, melspec, spkids):
@@ -1054,7 +1070,8 @@ class SynthesizerTrn(nn.Module):
         
         z = self.flow(z_p, ppg_mask, g=g, reverse=True)
         # spk = None
-        o = self.dec(spk, z * ppg_mask, f0=pit)
+        # o = self.dec(spk, z * ppg_mask, f0=pit)
+        o = self.dec(z * ppg_mask, g)
         return o
 
 
