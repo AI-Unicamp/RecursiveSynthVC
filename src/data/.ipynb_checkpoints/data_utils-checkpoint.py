@@ -31,6 +31,7 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
         self.sampling_rate = hparams.sampling_rate
         self.segment_size = hparams.segment_size
         self.hop_length = hparams.hop_length
+        self.use_pre_trained_spk_model = hparams.use_pre_trained_spk_model
         self._filter()
         print(f'----------{len(self.items)}----------')
         device = torch.device('cpu')
@@ -68,7 +69,7 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
                 continue
             if (usel >= items_max):
                 usel = items_max
-            items_new.append([wavpath, spec, pitch, melspec16, int(spk), usel])
+            items_new.append([wavpath, spec, pitch, melspec16, spk, usel])
             lengths.append(usel)
         self.items = items_new
         self.lengths = lengths
@@ -112,7 +113,11 @@ class TextAudioSpeakerSet(torch.utils.data.Dataset):
         pit = torch.FloatTensor(pit)
 #         vec = torch.FloatTensor(vec)
         melspec16 = torch.FloatTensor(melspec16)
-        spk = torch.LongTensor([spk])
+
+        if(self.use_pre_trained_spk_model):
+            spk = torch.FloatTensor(np.load(spk))
+        else:
+            spk = torch.LongTensor([spk])
     
         
     
@@ -200,8 +205,9 @@ class TextAudioSpeakerCollate:
         melspec16_padded.zero_()
 #         vec_padded.zero_()
         pit_padded.zero_()
-        spkids = torch.LongTensor(len(batch), 1)
-
+        # spkids = torch.LongTensor(len(batch), 1)
+        spkids = torch.FloatTensor(len(batch), batch[0][5].size(0))
+    
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
 
@@ -224,7 +230,8 @@ class TextAudioSpeakerCollate:
             # print(mel_perturbed_padded.shape, mel_perturbed.shape)
             mel_spec_padded[i, :, : mel_spec.size(1)] = mel_spec
             # print(spkids.shape, row[5].shape)
-            spkids[i, 0] = row[5]
+            # spkids[i, 0] = row[5]
+            spkids[i] = row[5]
             
         # print(ppg_padded.shape)
         # print(ppg_lengths.shape)

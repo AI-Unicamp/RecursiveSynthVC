@@ -10,3 +10,6 @@ data_vc*
 data_vctkesd*
 data_emolj
 data_emolj_val
+data_tmp/*
+**/__pycache__/
+**/.ipynb_checkpoints/

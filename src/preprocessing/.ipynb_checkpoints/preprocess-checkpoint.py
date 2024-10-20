@@ -14,6 +14,11 @@ from src.preprocessing.preprocess_crepe import compute_f0
 from src.preprocessing.preprocess_sr import resample_wave, process_file
 from src.preprocessing.preprocess_flist import print_error
 from src.preprocessing.preprocess_whisper import load_model_whisper, pred_whisper
+from src.preprocessing.preprocess_speaker import process_wav_speaker
+from src.models.encoder.speaker.models import LSTMSpeakerEncoder
+from src.models.encoder.speaker.config import SpeakerEncoderConfig
+from src.models.encoder.speaker.utils.audio import AudioProcessor
+from src.models.encoder.speaker.infer import read_json
 
 def process_sr_with_thread_pool(wavPath, outPath, sr, thread_num=None):
     files = [f for f in os.listdir(f"{wavPath}") if f.endswith(".wav")]
@@ -36,7 +41,8 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--out", help="out", dest="out", required=True)
     parser.add_argument("-of", "--out_files", help="out files", dest="out_files", required=True)
     parser.add_argument("-t", "--thread_count", help="thread count to process, set 0 to use all cpu cores", dest="thread_count", type=int, default=1)
-
+    parser.add_argument("-spk", "--extract_speaker_emb", dest="use_spk_emb", action='store_true', help="Use it if you want to extract pretrained spk embeddings")
+    
     args = parser.parse_args()
     
     print(f'Reading df from {args.in_df}')
@@ -52,6 +58,34 @@ if __name__ == "__main__":
         # os.makedirs(args.out + '/melspec16', exist_ok=True)
         os.makedirs(args.out + '/whisper', exist_ok=True)
         print('{spec}, {pitch}, {waves-24k}, {waves-16k} and {whisper} folders were created.')
+
+        if(args.use_spk_emb):
+            os.makedirs(args.out + '/speaker', exist_ok = True)
+            print('Speaker embeddings folder created')
+
+            args.model_path = os.path.join("pre_trained_models", "best_model.pth.tar")
+            args.config_path = os.path.join("pre_trained_models", "config.json")
+            # config
+            config_dict = read_json(args.config_path)
+        
+            # model
+            config = SpeakerEncoderConfig(config_dict)
+            config.from_dict(config_dict)
+        
+            speaker_encoder = LSTMSpeakerEncoder(
+                config.model_params["input_dim"],
+                config.model_params["proj_dim"],
+                config.model_params["lstm_dim"],
+                config.model_params["num_lstm_layers"],
+            )
+            use_cuda = True if torch.cuda.is_available() else False
+            speaker_encoder.load_checkpoint(args.model_path, eval=True, use_cuda=use_cuda)
+        
+            # preprocess
+            speaker_encoder_ap = AudioProcessor(**config.audio)
+            # normalize the input audio level and trim silences
+            speaker_encoder_ap.do_sound_norm = True
+            speaker_encoder_ap.do_trim_silence = True
     except:
         print('It was not possible to create all directories.')
     
@@ -80,6 +114,14 @@ if __name__ == "__main__":
             
     wavs_24k = [args.out + '/waves-24k/' + f for f in os.listdir(args.out + '/waves-24k')]
     wavs_16k = [args.out + '/waves-16k/' + f for f in os.listdir(args.out + '/waves-16k')]
+
+    if(args.use_spk_emb):
+        print("Starting extracting speaker embeddings")
+        for w in tqdm(wavs_16k):
+            if w.endswith('.wav'):
+                file = w.split('/')[-1].split('.')[0]
+                out_path = args.out + '/speaker/' + file + '.spk'
+                process_wav_speaker(w, out_path, use_cuda, speaker_encoder_ap, speaker_encoder)
     
     print("Starting extracting spectrograms")
     # process_spec_with_thread_pool(wavs_24k, args.out + '/spec', thread_num=None)
@@ -127,6 +169,9 @@ if __name__ == "__main__":
             path_pitch = f"{args.out}/pitch/{file}.pit.npy"
             # path_melspec16 = f"{args.out}/melspec16/{file}.m16.npy"
             path_whisper = f"{args.out}/whisper/{file}.whs.npy"
+            if(args.use_spk_emb):
+                path_speaker = f"{args.out}/speaker/{file}.spk.npy"
+                
             has_error = 0
             if not os.path.isfile(path_wave):
                 print_error(path_wave)
@@ -140,8 +185,19 @@ if __name__ == "__main__":
             if not os.path.isfile(path_whisper):
                 print_error(path_whisper)
                 has_error = 1
+
+            if(args.use_spk_emb):
+                if not os.path.isfile(path_speaker):
+                    print_error(path_speaker)
+                    has_error = 1
+                    
             if has_error == 0:
-                spk = speakers[i]
+                if(args.use_spk_emb):
+                    spk = path_speaker
+                else:
+                    spk = speakers[i]
+
+                # print(spk)
                 all_items.append(
                     f"{path_wave}|{path_spec}|{path_pitch}|{path_whisper}|{spk}")
 

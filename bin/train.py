@@ -183,7 +183,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=hp.train.lr_decay, last_epoch=init_epoch-2)
 
     # stft_criterion = MultiResolutionSTFTLoss(device, eval(hp.mrd.resolutions))
-    # spkc_criterion = nn.CosineEmbeddingLoss()
+    spkc_criterion = nn.CosineEmbeddingLoss()
 
     trainloader = create_dataloader_train(hp, args.num_gpus, rank)
 
@@ -231,7 +231,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
             
             # generator
             fake_audio, ids_slice, z_mask, \
-                (z_p, m_p, logs_p, logs_q) = model_g(
+                (z_p, m_p, logs_p, logs_q), spk_preds = model_g(
                     melspec16, pit, spec, ppg_l, spec_l, melspec, spkids)
             
             ## OLD
@@ -241,9 +241,14 @@ def train(rank, args, chkpt_path, hp, hp_str):
 #             print(audio.shape)
             audio = commons.slice_segments(
                 audio, ids_slice * hp.data.hop_length, hp.data.segment_size)  # slice
-            # Spk Loss
-#             spk_loss = spkc_criterion(spk, spk_preds, torch.Tensor(spk_preds.size(0))
-#                                 .to(device).fill_(1.0))
+
+            if(hp.vits2.use_spk_grl):
+                # Spk Loss
+                spk_loss = spkc_criterion(spkids, spk_preds, torch.Tensor(spk_preds.size(0))
+                                    .to(device).fill_(1.0))
+            else:
+                spk_loss = 0
+                
 #             print(hp.data.hop_length, hp.data.segment_size)
 #             print(fake_audio.shape, audio.shape)
 #             print(fake_audio.max(), fake_audio.min())
@@ -260,7 +265,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
             # stft_loss = (sc_loss + mag_loss) * hp.train.c_stft
 
             # Generator Loss
-            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(audio, fake_audio)
+            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = model_d(audio, fake_audio)
             
             feat_loss = feature_loss(fmap_r, fmap_g)
             gen_loss, losses_gen = generator_loss(y_d_hat_g)
@@ -288,10 +293,10 @@ def train(rank, args, chkpt_path, hp, hp_str):
     
             # Loss
             if(step > hp.train.freeze_d_steps):
-                loss_g = gen_loss + feat_loss + mel_loss + loss_kl #+ stft_loss
+                loss_g = gen_loss + feat_loss + mel_loss + loss_kl + spk_loss #+ stft_loss
             else:
                 # print("")
-                loss_g = mel_loss + loss_kl #+ stft_loss 
+                loss_g = mel_loss + loss_kl + spk_loss #+ stft_loss 
                 
             loss_g.backward()
 #             print(loss_g)
@@ -314,7 +319,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
             if(step > hp.train.freeze_d_steps):
                 optim_d.zero_grad()
 
-                y_d_hat_r, y_d_hat_g, _, _ = net_d(audio, fake_audio.detach())
+                y_d_hat_r, y_d_hat_g, _, _ = model_d(audio, fake_audio.detach())
                 loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g)
                 loss_d = loss_disc
                 # disc_fake = model_d(fake_audio.detach())
@@ -338,12 +343,16 @@ def train(rank, args, chkpt_path, hp, hp_str):
             loss_m = mel_loss.item()
             loss_k = loss_kl.item()
 #             loss_r = loss_kl_r.item()
-#             loss_i = spk_loss.item()
 
+            if(hp.vits2.use_spk_grl):
+                loss_spk = spk_loss.item()
+            else:
+                loss_spk = 0
+            
             if rank == 0 and step % hp.log.info_interval == 0:
-                writer.log_training(loss_g, loss_d, loss_m, loss_f, loss_k, gen_loss.item(), step)
-                logger.info("epoch %d | g %.04f m %.04f s %.04f d %.04f k %.04f | step %d" % (
-                    epoch, loss_g, loss_m, loss_f, loss_d, loss_k, step))
+                writer.log_training(loss_g, loss_d, loss_m, loss_f, loss_k, gen_loss.item(), step, loss_spk)
+                logger.info("epoch %d | g %.04f m %.04f s %.04f d %.04f k %.04f sp %.04f| step %d" % (
+                    epoch, loss_g, loss_m, loss_f, loss_d, loss_k, loss_spk, step))
 
         if rank == 0 and epoch % hp.log.save_interval == 0:
             save_path = os.path.join(pth_dir, '%s_%04d.pt'

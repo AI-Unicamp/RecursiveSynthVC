@@ -6,11 +6,11 @@ train:
   betas: [0.8, 0.99]
   lr_decay: 0.999875
   eps: 1e-9
-  batch_size: 8
-  eval_batch_size: 32
-  accum_step: 1
+  batch_size: 24
+  eval_batch_size: 8
+  accum_step: 2
   c_stft: 45
-  c_mel: 0.
+  c_mel: 0
   c_kl: 1.
   port: 8001
   pretrain: "./model.pth"
@@ -18,8 +18,8 @@ train:
   train_with_whisper: False
 #############################
 data: 
-  training_files: "files/lj_30min_train.txt"
-  validation_files: "files/lj_30min_val.txt"
+  training_files: "files/vctk_esd_train_fixed.txt"
+  validation_files: "files/vctk_esd_val_proxy.txt"
   segment_size: 12000  
   max_wav_value: 32768.0
   sampling_rate: 24000
@@ -27,7 +27,7 @@ data:
   hop_length: 480
   win_length: 1024
   mel_channels: 100
-  mel_fmin: 0.0
+  mel_fmin: 50.0
   mel_fmax: 12000.0
 #############################
 vits2:
@@ -40,7 +40,7 @@ vits2:
   filter_channels: 768
   spec_channels: 513
   n_vocab: 100
-  n_speakers: 1
+  n_speakers: 20
   n_heads: 2
   n_layers: 6
   kernel_size: 3
@@ -48,9 +48,10 @@ vits2:
   resblock: 1
   resblock_kernel_sizes: [3,7,11]
   resblock_dilation_sizes: [[1,3,5],[1,3,5],[1,3,5]]
-  upsample_rates: [8,8,2,2]
+  initial_channel: 192
+  upsample_rates: [6,5,4,2,2]
   upsample_initial_channel: 512
-  upsample_kernel_sizes: [16,16,4,4]
+  upsample_kernel_sizes: [10,9,8,4,4]
   use_sdp: false
   
   
@@ -63,11 +64,11 @@ vits2:
 gen:
   #spk_dim: 256
   upsample_input: 192
-  upsample_rates: [6,5,4,4]
-  upsample_kernel_sizes: [10,9,8,8]
+  upsample_rates: [6,5,4,2,2]
+  upsample_kernel_sizes: [10,9,8,4,4]
 #   upsample_rates: [11,5,5] # Multiplicacao desses numeros = hop size
 #   upsample_kernel_sizes: [15,14,14]
-  upsample_initial_channel: 480
+  upsample_initial_channel: 512
   resblock_kernel_sizes: [3,7,11]
   resblock_dilation_sizes: [[1,3,5], [1,3,5], [1,3,5]]
 #############################

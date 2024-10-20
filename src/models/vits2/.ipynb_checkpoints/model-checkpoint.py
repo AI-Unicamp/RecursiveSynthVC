@@ -17,7 +17,7 @@ from src.models.vits2 import monotonic_align
 from src.models.vits2.commons import get_padding, init_weights
 from src.models.vits2.da import SpeakerClassifier
 from src.models.bigvgan.generator import Generator as BigVGAN
-from src.models.encoder.reference_encoder import ReferenceEncoder
+from src.models.encoder.style.reference_encoder import ReferenceEncoder
 
 AVAILABLE_FLOW_TYPES = [
     "pre_conv"
@@ -923,7 +923,8 @@ class SynthesizerTrn(nn.Module):
         self.transformer_flow_type = hp.vits2.transformer_flow_type
         self.initial_channel = hp.vits2.initial_channel
         self.whisper = whisper
-
+        self.use_pre_trained_spk_model = hp.data.use_pre_trained_spk_model
+        self.spk_grl = hp.vits2.use_spk_grl
         
         if self.use_transformer_flows:
             assert (
@@ -948,21 +949,22 @@ class SynthesizerTrn(nn.Module):
             gin_channels=self.enc_gin_channels,
         )
 
-
-        # self.dec = BigVGAN(
-        #     hp
-        # )
-
-        self.dec = Generator(
-            initial_channel = self.initial_channel,
-            resblock = self.resblock,
-            resblock_kernel_sizes = self.resblock_kernel_sizes,
-            resblock_dilation_sizes = self.resblock_dilation_sizes,
-            upsample_rates = self.upsample_rates,
-            upsample_initial_channel = self.upsample_initial_channel,
-            upsample_kernel_sizes = self.upsample_kernel_sizes,
-            gin_channels = self.gin_channels
-        )
+        print(f"Using vocoder = {hp.vits2.vocoder}")
+        if(hp.vits2.vocoder == 'bigvgan'):
+            self.dec = BigVGAN(
+                hp
+            )
+        else:
+            self.dec = Generator(
+                initial_channel = self.initial_channel,
+                resblock = self.resblock,
+                resblock_kernel_sizes = self.resblock_kernel_sizes,
+                resblock_dilation_sizes = self.resblock_dilation_sizes,
+                upsample_rates = self.upsample_rates,
+                upsample_initial_channel = self.upsample_initial_channel,
+                upsample_kernel_sizes = self.upsample_kernel_sizes,
+                gin_channels = self.gin_channels
+            )
 
         self.enc_q = PosteriorEncoder(
             self.spec_channels,
@@ -985,19 +987,23 @@ class SynthesizerTrn(nn.Module):
             transformer_flow_type=self.transformer_flow_type,
         )
 
-        self.speaker_classifier = SpeakerClassifier(
-            hp.vits2.hidden_channels,
-            hp.vits2.spk_dim,
-        )
+        if self.spk_grl:
+            self.speaker_classifier = SpeakerClassifier(
+                hp.vits2.hidden_channels,
+                hp.vits2.spk_dim,
+            )
 
         if self.n_speakers > 0:
-            self.emb_g = nn.Embedding(self.n_speakers, self.gin_channels)
+            if self.use_pre_trained_spk_model:
+                self.emb_g = nn.Linear(hp.vits2.spk_dim, self.gin_channels)
+            else:
+                self.emb_g = nn.Embedding(self.n_speakers, self.gin_channels)
         # self.re = ReferenceEncoder(100,hp.vits2.spk_dim)
-        # self.emb_g = nn.Linear(hp.vits2.spk_dim, self.gin_channels)
+  
 
     def forward(self, melspec16, pit, spec, ppg_len, spec_len, melspec, spkids): #, x_lengths, y, y_lengths, sid=None):
         if self.n_speakers > 0:
-            g = self.emb_g(spkids).permute(0,2,1)  # [b, h, 1]
+            g = self.emb_g(spkids).unsqueeze(-1) # [b, h, 1]
             spk = g.squeeze(-1)
         else:
             spk = None
@@ -1038,15 +1044,20 @@ class SynthesizerTrn(nn.Module):
 #         z_r, logdet_r = self.flow(z_p, spec_mask, g=spk.unsqueeze(-1), reverse=True)
         # speaker
         
-#         spk_preds = self.speaker_classifier(x)
-  
+        if self.spk_grl:
+            spk_preds = self.speaker_classifier(x)
+        else:
+            spk_preds = None
+            
         # return audio, ids_slice, spec_mask, (z_p_tmp, z_p, m_p, logs_p, z_q, m_q, logs_q)#, spk_preds
-        return audio, ids_slice, spec_mask, (z_p, m_p, logs_p, logs_q)#, spk_preds
+        return audio, ids_slice, spec_mask, (z_p, m_p, logs_p, logs_q), spk_preds
 
 
     def infer(self, melspec16, pit, ppg_l, melspec, spkids):
+        # print(spkids.shape)
+        # print(self.emb_g)
         if self.n_speakers > 0:
-            g = self.emb_g(spkids).permute(0,2,1)  # [b, h, 1]
+            g = self.emb_g(spkids).unsqueeze(-1)  # [b, h, 1]
             spk = g.squeeze(-1)
             # print(g.shape)
         else:

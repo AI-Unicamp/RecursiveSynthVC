@@ -16,7 +16,7 @@ def resample_wave(wav_in, wav_out, sample_rate):
 
 def process_file(wavPath , outPath, sr):
     if wavPath.endswith(".wav"):
-        file = '_'.join(wavPath.split('/')[-3:]).split('.')[0]
+        file = '_'.join('_'.join(wavPath.split('/')[-3:]).split('.')[:-1])
         resample_wave(f"{wavPath}", f"{outPath}/{file}.wav", sr)
 
 
