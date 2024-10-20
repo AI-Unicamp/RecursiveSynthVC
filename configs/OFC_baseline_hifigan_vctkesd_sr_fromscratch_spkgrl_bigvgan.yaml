@@ -6,7 +6,7 @@ train:
   betas: [0.8, 0.99]
   lr_decay: 0.999875
   eps: 1e-9
-  batch_size: 24
+  batch_size: 8
   eval_batch_size: 8
   accum_step: 1
   c_stft: 0

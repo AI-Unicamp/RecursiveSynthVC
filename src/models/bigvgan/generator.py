@@ -112,7 +112,7 @@ class Generator(torch.nn.Module):
         # weight initialization
         self.ups.apply(init_weights)
 
-    def forward(self, spk, x, f0):
+    def forward(self, x, spk, f0):
         # Perturbation
         x = x + torch.randn_like(x)
         # adapter
@@ -179,7 +179,7 @@ class Generator(torch.nn.Module):
         audio = audio.short()
         return audio.cpu().detach().numpy()
 
-    def inference(self, spk, x, har_source):
+    def inference(self, x, spk, har_source):
         # adapter
         x = self.adapter(x, spk)
         x = self.conv_pre(x)

@@ -720,7 +720,7 @@ class Generator(torch.nn.Module):
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
 
-    def forward(self, x, g=None):
+    def forward(self, x, g=None, f0=None):
         # print(x.shape, g.shape)
         x = self.conv_pre(x)
         # print(x.shape)
@@ -1035,8 +1035,8 @@ class SynthesizerTrn(nn.Module):
 #         print('seg size in model: ', self.segment_size)
 #         print(z_slice.shape, pit_slice.shape)
     
-        # audio = self.dec(spk, z_slice, pit_slice)
-        audio = self.dec(z_slice, g)
+        audio = self.dec(z_slice, spk, pit_slice)
+        # audio = self.dec(z_slice, g, pit_slice)
         
         # SNAC to flow
         z_p = self.flow(z_q, spec_mask, g=g)
@@ -1081,8 +1081,8 @@ class SynthesizerTrn(nn.Module):
         
         z = self.flow(z_p, ppg_mask, g=g, reverse=True)
         # spk = None
-        # o = self.dec(spk, z * ppg_mask, f0=pit)
-        o = self.dec(z * ppg_mask, g)
+        o = self.dec(z * ppg_mask, spk, pit)
+        # o = self.dec(z * ppg_mask, g, pit)
         return o
 
 
